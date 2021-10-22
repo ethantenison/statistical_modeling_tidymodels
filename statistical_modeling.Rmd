@@ -1,0 +1,271 @@
+---
+title: "Tidymodels + TidyCensus"
+author:
+  - name: Ethan Tenison 
+    affiliation: RGK Center for Philanthropy and Community Service 
+    affiliation_url: https://www.lbjdata.org/
+date: "`r format(Sys.Date(), '%B %d, %Y') `"
+output:
+  distill::distill_article:
+    code_folding: yes
+    toc: yes
+    toc_float: yes
+    theme: theme.css
+  pdf_document: default
+  word_document:
+    toc: yes
+---
+
+
+# Libraries
+
+```{r setup, include=FALSE}
+
+#Install all required packages 
+#install.packages(c('tidyverse','tidycensus', 'tidymodels', 'vip','dotwhisker'))
+
+
+#Libraries
+library(tidyverse)    # data cleaning and visualization 
+library(tidycensus)   # for accessing census data 
+library(tidymodels)   # suite of stats modeling packages
+library(vip)          # for visualizing variable importance
+library(dotwhisker)   # for visualizing regression results
+
+#Rmarkdown Options 
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+# TidyCensus 
+
+If you need to request a key go here: https://api.census.gov/data/key_signup.html
+
+```{r pulling_data}
+
+#Set your API KEY
+census_api_key("76926b6af8b2507a064992aa1d5cabc9924ec13c")
+
+#View all the variables available
+v19 <- load_variables(2019, "acs5", cache = TRUE)
+
+
+#List out appropriate variables
+median_housing_costs <- "B25105_001"
+median_household_income <- "B19013_001"
+avg_household_size <- "B25010_001"
+housing_units <- "B25008_001"
+school_age <-
+  c("B14001_004", "B14001_005", "B14001_006", "B14001_007")
+medicare_coverage <- "B992706_001"
+hispanic <- "B03001_001"
+nonfamily <- "B09020_012"
+
+
+#acs variables
+vars <-
+  c(
+    median_housing_costs,
+    median_household_income,
+    avg_household_size,
+    housing_units,
+    medicare_coverage,
+    hispanic,
+    "B14001_004",
+    "B14001_005",
+    "B14001_006",
+    "B14001_007",
+    nonfamily
+  )
+
+acs <- get_acs(
+  geography = "tract",
+  variables = vars,
+  year = 2019,
+  state = "TX"
+)
+```
+
+# Data cleaning acs data 
+
+```{r data_cleaning}
+
+
+df <- acs |>
+  pivot_wider(names_from = variable, values_from = c(estimate, moe)) |>
+  select(!starts_with("moe")) |>
+  rename(
+    "hispanic" = "estimate_B03001_001",
+    "med_hs_in" = "estimate_B19013_001",
+    "hs_units" = "estimate_B25008_001",
+    "hs_size" = "estimate_B25010_001",
+    "med_hs_cost" = "estimate_B25105_001",
+    "medicare" = "estimate_B992706_001",
+    "nonfamily" = "estimate_B09020_012"
+  ) |>
+  mutate(
+    school_age = estimate_B14001_004 + estimate_B14001_005 +
+      estimate_B14001_006 + estimate_B14001_007,
+    school_enrol_hshld = school_age / hs_units,
+    medicare_hshld = medicare / hs_units,
+    hispanic_hshld = hispanic / hs_units,
+    nonfamily_hshold = nonfamily/ hs_units
+  ) |>
+  select(!starts_with("estimate"),
+         -c(GEOID, NAME, hs_units, school_age,
+            medicare, hispanic, nonfamily))
+
+df <- na.omit(df)
+
+```
+
+# Splitting data 
+
+```{r splitting}
+
+set.seed(27)
+
+data_split <- initial_split(df, prop = 3/4)
+
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+glimpse(train_data)
+
+```
+
+# Picking the model 
+
+hs_size ~ med_hs_in + med_hs_cost + school_enrol_hshld + medicare_hshld + hispanic_hshld
+
+# Build model
+
+```{r model}
+
+lm_mod <- linear_reg() |> 
+  set_engine("lm") 
+  
+lm_mod
+```
+
+
+# Fit model 
+
+```{r fit}
+
+
+lm_fit <- 
+  lm_mod %>% 
+  fit( hs_size~ ., 
+      data = train_data)
+
+lm_fit
+```
+
+# Tidying the results
+
+```{r tidy}
+
+tidy(lm_fit)
+
+```
+# Dot and whisker plot
+
+```{r dotwhisker}
+
+tidy(lm_fit) %>% 
+  dwplot(dot_args = list(size = 2, color = "black"),
+         whisker_args = list(color = "black"),
+         vline = geom_vline(xintercept = 0, colour = "grey50", linetype = 2))
+
+```
+# Prediction
+
+```{r prediction}
+
+
+pred <- predict(lm_fit, new_data = test_data)
+pred
+
+```
+
+# Evaluating performance 
+
+* Linearity
+* Errors (Residuals) are normally distributed
+* Homoskedastity of errors
+* Independence of observations 
+
+```{r eval}
+
+par(mfrow = c(2, 2)) # plot all 4 plots in one plot
+plot(lm_fit$fit,  # Select the fit object from the lm_fit list object 
+     pch = 16,    # optional parameters to make points blue
+     col = '#006EA1')
+
+
+```
+
+# Evaluating Model
+
+```{r eval_mod}
+glance(lm_fit)
+
+
+```
+# Variable Importance 
+
+```{r vip}
+
+vip(lm_fit)
+```
+# Check for accuracy 
+
+```{r check accuracy}
+
+
+test_results <- predict(lm_fit, new_data = test_data) |>
+  bind_cols(test_data)
+
+ggplot(data = test_results,
+       mapping = aes(x = .pred, y = hs_size)) +
+  geom_point(color = '#006EA1') +
+  geom_abline(intercept = 0, slope = 1, color = 'orange') +
+  labs(title = 'Linear Regression Results - Test Set',
+       x = 'Predicted Size',
+       y = 'Actual Size')
+
+```
+
+# Lets use Random Forest instead!
+
+```{r rf}
+rf_mod <- rand_forest(mode = "regression") |> 
+  set_engine("ranger") 
+  
+print(rf_mod)
+
+
+rf_fit <- 
+  rf_mod %>% 
+  fit( hs_size~ ., 
+      data = train_data)
+
+print(rf_fit)
+
+
+test_results <- predict(rf_fit, new_data = test_data) |>
+  bind_cols(test_data)
+
+ggplot(data = test_results,
+       mapping = aes(x = .pred, y = hs_size)) +
+  geom_point(color = '#006EA1') +
+  geom_abline(intercept = 0, slope = 1, color = 'orange') +
+  labs(title = 'RF Regression Results - Test Set',
+       x = 'Predicted Size',
+       y = 'Actual Size')
+```
+

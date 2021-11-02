@@ -47,7 +47,7 @@ If you need to request a key go here: https://api.census.gov/data/key_signup.htm
 ```{r pulling_data}
 
 #Set your API KEY
-census_api_key("76926b6af8b2507a064992aa1d5cabc9924ec13c")
+census_api_key("YOUR API KEY HERE")
 
 #View all the variables available
 v19 <- load_variables(2019, "acs5", cache = TRUE)
